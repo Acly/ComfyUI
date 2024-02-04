@@ -404,29 +404,41 @@ def common_upscale(samples, width, height, upscale_method, crop):
 def get_tiled_scale_steps(width, height, tile_x, tile_y, overlap):
     return math.ceil((height / (tile_y - overlap))) * math.ceil((width / (tile_x - overlap)))
 
+def get_tiled_scale_schedule(width, height, tile_x, tile_y, overlap, min_size):
+    count_x = math.ceil((width - min_size) / (tile_x - overlap))
+    count_y = math.ceil((height - min_size) / (tile_y - overlap))
+    tiles = []
+    for j in range(count_y):
+        y = j * (tile_y - overlap)
+        y_end = height if j == count_y - 1 else y + tile_y
+        for i in range(count_x):
+            x = i * (tile_x - overlap)
+            x_end = width if i == count_x - 1 else x + tile_x
+            tiles.append((x, x_end, y, y_end))
+    return tiles
+
 @torch.inference_mode()
-def tiled_scale(samples, function, tile_x=64, tile_y=64, overlap = 8, upscale_amount = 4, out_channels = 3, output_device="cpu", pbar = None):
+def tiled_scale(samples, function, tiles, overlap = 8, upscale_amount = 4, out_channels = 3, output_device="cpu", pbar = None):
     output = torch.empty((samples.shape[0], out_channels, round(samples.shape[2] * upscale_amount), round(samples.shape[3] * upscale_amount)), device=output_device)
     for b in range(samples.shape[0]):
         s = samples[b:b+1]
         out = torch.zeros((s.shape[0], out_channels, round(s.shape[2] * upscale_amount), round(s.shape[3] * upscale_amount)), device=output_device)
         out_div = torch.zeros((s.shape[0], out_channels, round(s.shape[2] * upscale_amount), round(s.shape[3] * upscale_amount)), device=output_device)
-        for y in range(0, s.shape[2], tile_y - overlap):
-            for x in range(0, s.shape[3], tile_x - overlap):
-                s_in = s[:,:,y:y+tile_y,x:x+tile_x]
+        for x, x_end, y, y_end in tiles:
+            s_in = s[:,:,y:y_end,x:x_end]
 
-                ps = function(s_in).to(output_device)
-                mask = torch.ones_like(ps)
-                feather = round(overlap * upscale_amount)
-                for t in range(feather):
-                        mask[:,:,t:1+t,:] *= ((1.0/feather) * (t + 1))
-                        mask[:,:,mask.shape[2] -1 -t: mask.shape[2]-t,:] *= ((1.0/feather) * (t + 1))
-                        mask[:,:,:,t:1+t] *= ((1.0/feather) * (t + 1))
-                        mask[:,:,:,mask.shape[3]- 1 - t: mask.shape[3]- t] *= ((1.0/feather) * (t + 1))
-                out[:,:,round(y*upscale_amount):round((y+tile_y)*upscale_amount),round(x*upscale_amount):round((x+tile_x)*upscale_amount)] += ps * mask
-                out_div[:,:,round(y*upscale_amount):round((y+tile_y)*upscale_amount),round(x*upscale_amount):round((x+tile_x)*upscale_amount)] += mask
-                if pbar is not None:
-                    pbar.update(1)
+            ps = function(s_in).to(output_device)
+            mask = torch.ones_like(ps)
+            feather = round(overlap * upscale_amount)
+            for t in range(feather):
+                    mask[:,:,t:1+t,:] *= ((1.0/feather) * (t + 1))
+                    mask[:,:,mask.shape[2] -1 -t: mask.shape[2]-t,:] *= ((1.0/feather) * (t + 1))
+                    mask[:,:,:,t:1+t] *= ((1.0/feather) * (t + 1))
+                    mask[:,:,:,mask.shape[3]- 1 - t: mask.shape[3]- t] *= ((1.0/feather) * (t + 1))
+            out[:,:,round(y*upscale_amount):round(y_end*upscale_amount),round(x*upscale_amount):round(x_end*upscale_amount)] += ps * mask
+            out_div[:,:,round(y*upscale_amount):round(y_end*upscale_amount),round(x*upscale_amount):round(x_end*upscale_amount)] += mask
+            if pbar is not None:
+                pbar.update(1)
 
         output[b:b+1] = out/out_div
     return output
